@@ -1,23 +1,30 @@
 from flask import Flask, request, jsonify
-import json
-from collections import defaultdict
+import sqlite3
 import os
-import requests
+from collections import defaultdict
 
 app = Flask(__name__)
 
+DB_PATH = os.path.join(os.path.dirname(__file__), 'enaho.db')
+
 STOPWORDS = ['que', 'como', 'para', 'una', 'uno', 'los', 'las', 'del', 'con', 'por', 'hay', 'sobre', 'existe', 'variable', 'variables', 'datos', 'dato', 'enaho', 'quiero', 'busco', 'necesito', 'encontrar', 'tesis', 'investigacion']
 
-# Cargar metadata desde Google Drive al iniciar
-def cargar_metadata():
-    url = "https://drive.google.com/uc?export=download&id=1dCfMXjt_EG9h5GWSIazQ8QpOnbvqfLH7&confirm=t"
-    print("Descargando metadata desde Drive...")
-    r = requests.get(url, timeout=60)
-    data = r.json()
-    print(f"Metadata cargada: {len(data)} registros")
-    return data
-
-metadata = cargar_metadata()
+def buscar_en_db(palabras):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    
+    condiciones = []
+    params = []
+    for p in palabras:
+        condiciones.append("(variable_lower LIKE ? OR label LIKE ?)")
+        params.extend([f'%{p}%', f'%{p}%'])
+    
+    query = f"SELECT * FROM variables WHERE {' OR '.join(condiciones)}"
+    cur.execute(query, params)
+    resultados = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return resultados
 
 def agrupar_por_variable(resultados):
     grupos = defaultdict(lambda: {
@@ -55,11 +62,7 @@ def buscar():
     if not palabras:
         return jsonify({'total': 0, 'contexto': 'No se encontraron palabras clave.', 'pregunta': pregunta})
     
-    resultados = [v for v in metadata if any(
-        p in f"{v['variable']} {v['variable_lower']} {v['label']}".lower() 
-        for p in palabras
-    )]
-    
+    resultados = buscar_en_db(palabras)
     grupos = agrupar_por_variable(resultados)
     top = list(grupos.values())[:30]
     
@@ -89,7 +92,12 @@ def buscar():
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'ok', 'registros': len(metadata)})
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute('SELECT COUNT(*) FROM variables')
+    count = cur.fetchone()[0]
+    conn.close()
+    return jsonify({'status': 'ok', 'registros': count})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
